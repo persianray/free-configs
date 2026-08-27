@@ -17,11 +17,27 @@ def detect_type(uri: str) -> str | None:
     return None
 
 
+def _valid_host(host: str | None) -> bool:
+    """Reject obviously malformed hostnames/IPs before we ever try to
+    connect to them -- empty, absurdly long, or with empty/oversized
+    DNS labels (e.g. 'example..com' or a label over 63 chars) will
+    fail IDNA encoding at connect time anyway, so filter them here."""
+    if not host or len(host) > 253:
+        return False
+    labels = host.split(".")
+    for label in labels:
+        if len(label) == 0 or len(label) > 63:
+            return False
+    return True
+
+
 def parse_vless(uri: str) -> dict | None:
     try:
         p = urlparse(uri)
         q = parse_qs(p.query)
         if not p.hostname or not p.port or not p.username:
+            return None
+        if not _valid_host(p.hostname):
             return None
         return {
             "type": "vless",
@@ -51,6 +67,8 @@ def parse_trojan(uri: str) -> dict | None:
         p = urlparse(uri)
         q = parse_qs(p.query)
         if not p.hostname or not p.port or not p.username:
+            return None
+        if not _valid_host(p.hostname):
             return None
         return {
             "type": "trojan",

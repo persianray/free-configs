@@ -34,7 +34,12 @@ async def tcp_check(host: str, port: int, timeout: float = TCP_TIMEOUT) -> bool:
         except Exception:
             pass
         return True
-    except (asyncio.TimeoutError, OSError):
+    except (asyncio.TimeoutError, OSError, UnicodeError, ValueError):
+        # OSError covers connection failures/DNS resolution errors.
+        # UnicodeError covers malformed hostnames (e.g. empty labels,
+        # labels over 63 chars) that fail IDNA encoding before a
+        # connection is even attempted -- these come from garbage/
+        # malformed entries in public source lists, not real servers.
         return False
 
 
@@ -93,19 +98,26 @@ async def full_proxy_check(node: dict, local_port: int, timeout: float = PROXY_T
 
 
 async def test_node(node: dict, local_port: int) -> dict:
-    """Runs both stages. Returns a result dict merged onto the node."""
+    """Runs both stages. Returns a result dict merged onto the node.
+    Wrapped so that any unexpected error from a single malformed node
+    (bad hostname, weird encoding, etc.) can never take down the whole
+    batch -- it just gets recorded as a failure and testing continues."""
     result = {**node, "ok": False, "latency": None}
+    try:
+        if not await tcp_check(node["address"], node["port"]):
+            result["fail_stage"] = "tcp"
+            return result
 
-    if not await tcp_check(node["address"], node["port"]):
-        result["fail_stage"] = "tcp"
+        ok, latency = await full_proxy_check(node, local_port)
+        result["ok"] = ok
+        result["latency"] = latency
+        if not ok:
+            result["fail_stage"] = "proxy"
         return result
-
-    ok, latency = await full_proxy_check(node, local_port)
-    result["ok"] = ok
-    result["latency"] = latency
-    if not ok:
-        result["fail_stage"] = "proxy"
-    return result
+    except Exception as e:
+        result["fail_stage"] = "error"
+        result["error"] = str(e)
+        return result
 
 
 async def run_all_tests(nodes: list[dict], concurrency: int = 50, base_port: int = 20000):
