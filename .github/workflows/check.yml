@@ -2,10 +2,10 @@ name: Check Proxy Configs
 
 on:
   schedule:
-    # Every 6 hours. Public repos get unlimited Actions minutes, so
-    # the real constraint is politeness to source sites + job runtime,
-    # not your quota. Tighten to */3 or */4 if node churn justifies it.
-    - cron: '0 */6 * * *'
+    # Every 3 hours. Public repos get unlimited Actions minutes, so
+    # the real constraint is politeness to source sites + job runtime
+    # (timeout-minutes: 60), not the free-plan quota.
+    - cron: '0 */3 * * *'
   workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
 
 permissions:
@@ -14,6 +14,14 @@ permissions:
 concurrency:
   group: proxy-check
   cancel-in-progress: true   # don't let overlapping runs step on each other
+
+env:
+  # Pinned deliberately -- XTLS ships releases very frequently,
+  # so tracking "latest" means the binary (and potentially its
+  # config schema) can change under you with no warning between
+  # runs. Bump version + SHA256 together when you upgrade.
+  XRAY_VERSION: v26.7.28
+  XRAY_SHA256: 8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40
 
 jobs:
   test-nodes:
@@ -32,27 +40,34 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Cache Xray zip
+        uses: actions/cache@v4
+        with:
+          path: xray.zip
+          key: xray-${{ env.XRAY_VERSION }}-linux-64-${{ env.XRAY_SHA256 }}
+
       - name: Install Xray-core
-        env:
-          # Pinned deliberately -- XTLS ships releases very frequently,
-          # so tracking "latest" means the binary (and potentially its
-          # config schema) can change under you with no warning between
-          # runs. Bump this intentionally when you want to upgrade, and
-          # re-run the workflow manually once to confirm nothing broke.
-          XRAY_VERSION: v26.7.28
         run: |
-          curl -fsSL -o xray.zip \
-            "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+          if [ ! -f xray.zip ]; then
+            curl -fsSL -o xray.zip \
+              "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+          fi
+          echo "${XRAY_SHA256}  xray.zip" | sha256sum -c -
           unzip -o xray.zip -d xray_bin
           sudo mv xray_bin/xray /usr/local/bin/xray
           sudo chmod +x /usr/local/bin/xray
           xray version
 
       - name: Run tester
+        id: test
         working-directory: scripts
         run: python main.py
 
       - name: Commit updated results
+        if: success()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
